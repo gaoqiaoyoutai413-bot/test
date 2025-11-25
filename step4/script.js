@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     // --- Configuration ---
     // IMPORTANT: Replace this URL with your deployed Google Apps Script Web App URL
-    const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwgsz2ylmgJ_u-r7Inoj1l_TYIct2lAlacYYCJEk7w_k0VYN-rzgwDceE40EmtgEkWA/exec'; 
+    const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwgsz2ylmgJ_u-r7Inoj1l_TYIct2lAlacYYCJEk7w_k0VYN-rzgwDceE40EmtgEkWA/exec';
 
     // --- DOM Elements ---
     const expenseForm = document.getElementById('expense-form');
@@ -16,16 +16,75 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Initialization ---
     // Set default date to today
     dateInput.valueAsDate = new Date();
-    
+
     // Load data from localStorage
     let expenses = JSON.parse(localStorage.getItem('expenses')) || [];
     renderExpenses();
     renderSummary();
 
+    // Fetch latest from Cloud
+    fetchExpenses();
+
+    // Fetch data from GAS on load
+    fetchExpenses();
+
     // --- Event Listeners ---
     expenseForm.addEventListener('submit', handleAddExpense);
 
     // --- Functions ---
+
+    // Fetch data from GAS on load
+    async function fetchExpenses() {
+        if (!GAS_API_URL) return;
+
+        try {
+            const response = await fetch(`${GAS_API_URL}?action=read`);
+            const data = await response.json();
+
+            if (Array.isArray(data)) {
+                expenses = data.map(item => ({
+                    ...item,
+                    amount: parseInt(item.amount) // Ensure amount is number
+                }));
+                saveToLocalStorage(); // Sync to local for offline/backup
+                renderExpenses();
+                renderSummary();
+            }
+        } catch (error) {
+            console.error('Failed to fetch expenses:', error);
+        }
+    }
+
+    function saveExpense(expense) {
+        // Optimistic UI update
+        expenses.unshift(expense);
+        saveToLocalStorage();
+
+        // Sync to Cloud
+        addExpenseToSheet(expense);
+    }
+
+    async function addExpenseToSheet(expense) {
+        if (!GAS_API_URL) return;
+
+        const formData = new FormData();
+        formData.append('action', 'add');
+        formData.append('id', expense.id);
+        formData.append('date', expense.date);
+        formData.append('category', expense.category);
+        formData.append('amount', expense.amount);
+        formData.append('memo', expense.memo);
+
+        try {
+            await fetch(GAS_API_URL, {
+                method: 'POST',
+                body: formData
+            });
+            console.log('Added to Sheets');
+        } catch (error) {
+            console.error('Add failed:', error);
+        }
+    }
 
     async function handleAddExpense(e) {
         e.preventDefault();
@@ -38,30 +97,44 @@ document.addEventListener('DOMContentLoaded', () => {
             memo: memoInput.value
         };
 
-        // 1. Save to Local State
-        expenses.unshift(newExpense); // Add to beginning of array
-        saveToLocalStorage();
+        // 1. Save (Local + Cloud)
+        saveExpense(newExpense);
 
         // 2. Update UI
         renderExpenses();
         renderSummary();
         expenseForm.reset();
         dateInput.valueAsDate = new Date(); // Reset date to today
-
-        // 3. Sync to Google Sheets (Fire and Forget)
-        if (GAS_API_URL) {
-            syncToSheets(newExpense);
-        } else {
-            console.log('GAS_API_URL is not set. Skipping sync.');
-        }
     }
 
     function deleteExpense(id) {
         if (confirm('この記録を削除しますか？')) {
-            expenses = expenses.filter(expense => expense.id !== id);
+            // Optimistic UI update
+            expenses = expenses.filter(expense => expense.id != id); // loose equality for string/number ID mismatch
             saveToLocalStorage();
             renderExpenses();
             renderSummary();
+
+            // Sync to Cloud
+            deleteExpenseFromSheet(id);
+        }
+    }
+
+    async function deleteExpenseFromSheet(id) {
+        if (!GAS_API_URL) return;
+
+        const formData = new FormData();
+        formData.append('action', 'delete');
+        formData.append('id', id);
+
+        try {
+            await fetch(GAS_API_URL, {
+                method: 'POST',
+                body: formData
+            });
+            console.log('Deleted from Sheets');
+        } catch (error) {
+            console.error('Delete failed:', error);
         }
     }
 
@@ -88,7 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // but inline onclick is simple for this scale. 
             // Better practice:
             li.querySelector('.btn-delete').onclick = () => deleteExpense(expense.id);
-            
+
             expenseList.appendChild(li);
         });
     }
@@ -119,32 +192,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Render Total
         totalAmountDisplay.textContent = `¥${total.toLocaleString()}`;
-    }
-
-    async function syncToSheets(data) {
-        try {
-            // Using no-cors mode because GAS Web Apps often have CORS issues with simple fetch
-            // Note: with no-cors, we can't read the response, but we can send data.
-            // Ideally, the GAS script should return JSONP or set correct CORS headers.
-            // For this simple example, we'll try standard POST and log errors.
-            
-            // Actually, for GAS `doPost` to work with CORS, it needs to return ContentService.createTextOutput()
-            // and we need to follow redirects.
-            
-            const formData = new FormData();
-            formData.append('date', data.date);
-            formData.append('category', data.category);
-            formData.append('amount', data.amount);
-            formData.append('memo', data.memo);
-
-            await fetch(GAS_API_URL, {
-                method: 'POST',
-                body: formData
-            });
-            console.log('Synced to Sheets');
-        } catch (error) {
-            console.error('Sync failed:', error);
-        }
     }
 
     function formatDate(dateString) {
